@@ -64,7 +64,22 @@ const objectionResponses = {
     'don\'t use reusable bags': "No worries, I hear that! Do you prefer paper or plastic?\" ---- \"Well hey the way the world’s going…we’re all going to have to go with reusable bags sooner or later. At least these ones are free right? Who doesn’t like free stuff?\""
 };
 
-app.use(bodyParser.json());
+// Use this raw body parser for all routes to handle the request body correctly
+app.use((req, res, next) => {
+    let data = '';
+    req.on('data', chunk => {
+        data += chunk;
+    });
+    req.on('end', () => {
+        req.rawBody = data;
+        try {
+            req.body = JSON.parse(data);
+        } catch (e) {
+            req.body = {};
+        }
+        next();
+    });
+});
 
 // --- WebSocket Server for Realtime Media Streams (RTMS) ---
 const wss = new WebSocket.Server({ noServer: true });
