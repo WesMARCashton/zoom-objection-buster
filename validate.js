@@ -1,8 +1,8 @@
 const http = require('http');
 const crypto = require('crypto');
 
-// Put your Zoom Verification Token here (from Zoom App Credentials)
-const ZOOM_VERIFICATION_TOKEN = 'your_zoom_verification_token_here';
+// Load Zoom Verification Token securely from environment variables
+const ZOOM_VERIFICATION_TOKEN = process.env.ZOOM_VERIFICATION_TOKEN;
 
 const server = http.createServer((req, res) => {
   let body = '';
@@ -14,31 +14,32 @@ const server = http.createServer((req, res) => {
     try {
       const payload = JSON.parse(body);
 
-      // Zoom sends event and payload inside this body
+      // Check if it's the Zoom validation event
       if (payload.event === 'endpoint.url_validation' && payload.payload?.plainToken) {
         const plainToken = payload.payload.plainToken;
 
-        // Create the encryptedToken using HMAC-SHA256
+        // Generate encryptedToken using HMAC-SHA256
         const encryptedToken = crypto
           .createHmac('sha256', ZOOM_VERIFICATION_TOKEN)
           .update(plainToken)
           .digest('hex');
 
-        // Respond with both tokens
+        // Respond with plainToken and encryptedToken
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ plainToken, encryptedToken }));
       } else {
         res.writeHead(400);
         res.end('Invalid validation payload');
       }
-    } catch (e) {
-      console.error('JSON parse error:', e);
+    } catch (err) {
+      console.error('Error parsing request:', err);
       res.writeHead(400);
       res.end('Bad Request');
     }
   });
 });
 
+// Start server on Render
 server.listen(process.env.PORT || 3000, () => {
-  console.log('Zoom validation server running...');
+  console.log('Zoom webhook validation server is running...');
 });
