@@ -65,21 +65,7 @@ const objectionResponses = {
 };
 
 // Use this raw body parser for all routes to handle the request body correctly
-app.use((req, res, next) => {
-    let data = '';
-    req.on('data', chunk => {
-        data += chunk;
-    });
-    req.on('end', () => {
-        req.rawBody = data;
-        try {
-            req.body = JSON.parse(data);
-        } catch (e) {
-            req.body = {};
-        }
-        next();
-    });
-});
+app.use(bodyParser.json());
 
 // --- WebSocket Server for Realtime Media Streams (RTMS) ---
 const wss = new WebSocket.Server({ noServer: true });
