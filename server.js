@@ -12,11 +12,13 @@ const port = process.env.PORT || 3000;
 
 // ---- Credentials & config via environment variables ----
 // Set these in Render: ZOOM_CLIENT_ID, ZOOM_CLIENT_SECRET, ZOOM_SECRET_TOKEN, ZOOM_REDIRECT_URI
+// Optional: ENFORCE_ZOOM_SIGNATURE=true (to hard-enforce signature match in prod)
 const ZOOM_CLIENT_ID = process.env.ZOOM_CLIENT_ID;
 const ZOOM_CLIENT_SECRET = process.env.ZOOM_CLIENT_SECRET;
-const ZOOM_SECRET_TOKEN = process.env.ZOOM_SECRET_TOKEN; // Event Subscription secret token
+const ZOOM_SECRET_TOKEN = process.env.ZOOM_SECRET_TOKEN; // Event Subscriptions "Secret Token"
 const ZOOM_REDIRECT_URI =
   process.env.ZOOM_REDIRECT_URI || 'https://your-render-service.onrender.com/zoom_oauth_callback';
+const ENFORCE_SIG = process.env.ENFORCE_ZOOM_SIGNATURE === 'true';
 
 // Keep a copy of the RAW JSON body for signature verification
 app.use(
@@ -27,7 +29,7 @@ app.use(
   })
 );
 
-// In-memory "database" for storing objection responses
+// ---------------- Objection Responses ----------------
 const objectionResponses = {
   // Part 1: Money Objections
   'budget is allocated':
@@ -110,7 +112,7 @@ const objectionResponses = {
     'No worries, I hear that! Do you prefer paper or plastic?" ---- "Well hey the way the world’s going…we’re all going to have to go with reusable bags sooner or later. At least these ones are free right? Who doesn’t like free stuff?"',
 };
 
-// --- WebSocket Server for Realtime Media Streams (RTMS) ---
+// ---------------- WebSocket (RTMS) ----------------
 const wss = new WebSocket.Server({ noServer: true });
 
 wss.on('connection', (ws) => {
@@ -118,19 +120,14 @@ wss.on('connection', (ws) => {
   ws.on('message', (message) => {
     try {
       const data = JSON.parse(message);
-      // Check for transcription data
       if (data.type === 'transcript') {
         const transcript = data.text;
         console.log(`Received transcript: ${transcript}`);
 
-        // Simple objection detection
         for (const objection in objectionResponses) {
           if (transcript.toLowerCase().includes(objection)) {
             const response = objectionResponses[objection];
-            // Send the objection and response to the frontend
-            ws.send(
-              JSON.stringify({ type: 'objection_detected', objection, response })
-            );
+            ws.send(JSON.stringify({ type: 'objection_detected', objection, response }));
             console.log(`Objection detected: "${objection}". Sending response.`);
             break;
           }
@@ -145,7 +142,7 @@ wss.on('connection', (ws) => {
   ws.on('error', (error) => console.error('RTMS WebSocket error:', error));
 });
 
-// --- Webhook Endpoint for Zoom Events (v2-compatible) ---
+// ---------------- Webhook Endpoint (Zoom v2) ----------------
 app.post('/zoom_webhook_endpoint', (req, res) => {
   // 1) URL validation handshake (Zoom sends event: 'endpoint.url_validation')
   if (req.body?.event === 'endpoint.url_validation') {
@@ -161,37 +158,29 @@ app.post('/zoom_webhook_endpoint', (req, res) => {
     return res.status(200).json({ plainToken, encryptedToken });
   }
 
-  // 2) (Optional) Validate webhook signature if Zoom sends x-zm-signature
+  // 2) Validate webhook signature (dev-mode lenient)
   const sigHeader = req.headers['x-zm-signature'];
   if (sigHeader) {
     try {
       // Header format: v0=<timestamp>,v0-signature=<hex>
-      const parts = Object.fromEntries(
-        String(sigHeader).split(',').map((kv) => kv.split('='))
-      );
+      const parts = Object.fromEntries(String(sigHeader).split(',').map((kv) => kv.split('=')));
       const timestamp = parts['v0'];
       const provided = parts['v0-signature'];
 
-      // Construct message using the RAW body, not JSON-stringified
-      const message = `v0:${timestamp}:${(req.rawBody || Buffer.from('')).toString(
-        'utf8'
-      )}`;
-      const expected = crypto
-        .createHmac('sha256', ZOOM_SECRET_TOKEN)
-        .update(message)
-        .digest('hex');
+      // Build message from RAW body captured in bodyParser.verify()
+      const message = `v0:${timestamp}:${(req.rawBody || Buffer.from('')).toString('utf8')}`;
+      const expected = crypto.createHmac('sha256', ZOOM_SECRET_TOKEN).update(message).digest('hex');
 
       if (!provided || provided !== expected) {
-        console.warn('Invalid Zoom webhook signature');
-        return res.status(401).send('Invalid signature');
+        console.warn('Zoom signature mismatch. (dev-mode will still accept)');
+        if (ENFORCE_SIG) return res.status(401).send('Invalid signature');
       }
     } catch (e) {
-      console.warn('Failed to validate Zoom signature', e);
-      return res.status(401).send('Invalid signature');
+      console.warn('Failed to parse/validate Zoom signature. (dev-mode will still accept)', e);
+      if (ENFORCE_SIG) return res.status(401).send('Invalid signature');
     }
   } else {
-    // In dev we allow missing signatures; in prod you can enforce it.
-    console.warn('x-zm-signature not present; continuing (dev mode).');
+    console.warn('x-zm-signature header not present; continuing (dev mode).');
   }
 
   // 3) Handle events
@@ -201,24 +190,21 @@ app.post('/zoom_webhook_endpoint', (req, res) => {
   if (event === 'phone_call.started') {
     const callId = req.body?.payload?.object?.callId;
     console.log(`Phone call started with ID: ${callId}. Ready to start RTMS.`);
-    // (Milestone B) Start RTMS/transcription session here
+    // TODO (Milestone B): Start RTMS/transcription session here
   } else if (event === 'phone_call.ended') {
     const callId = req.body?.payload?.object?.callId;
     console.log(`Phone call ended with ID: ${callId}. Disconnecting RTMS.`);
-    // (Milestone B) Stop RTMS session here
+    // TODO (Milestone B): Stop RTMS session here
   }
 
   return res.status(200).send('Event received');
 });
 
-// --- OAuth Redirect URL Endpoint ---
+// ---------------- OAuth Redirect ----------------
 app.get('/zoom_oauth_callback', async (req, res) => {
   console.log('Received OAuth callback.');
   const code = req.query.code;
-
-  if (!code) {
-    return res.status(400).send('Authorization code not found.');
-  }
+  if (!code) return res.status(400).send('Authorization code not found.');
 
   try {
     const response = await axios.post('https://zoom.us/oauth/token', null, {
@@ -229,9 +215,7 @@ app.get('/zoom_oauth_callback', async (req, res) => {
       },
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Basic ${Buffer.from(
-          `${ZOOM_CLIENT_ID}:${ZOOM_CLIENT_SECRET}`
-        ).toString('base64')}`,
+        Authorization: `Basic ${Buffer.from(`${ZOOM_CLIENT_ID}:${ZOOM_CLIENT_SECRET}`).toString('base64')}`,
       },
     });
 
@@ -240,19 +224,14 @@ app.get('/zoom_oauth_callback', async (req, res) => {
 
     console.log('Successfully received access token:', accessToken);
     // TODO: securely store accessToken & refreshToken (DB/kv)
-    res.send(
-      'Your app has been successfully authorized! You can now close this window.'
-    );
+    res.send('Your app has been successfully authorized! You can now close this window.');
   } catch (error) {
-    console.error(
-      'Error exchanging code for token:',
-      error?.response?.data || error.message
-    );
+    console.error('Error exchanging code for token:', error?.response?.data || error.message);
     res.status(500).send('Error during authorization. Please check the server logs.');
   }
 });
 
-// --- Starting the Server ---
+// ---------------- Start Server ----------------
 const server = app.listen(port, () => {
   console.log(`Backend server listening at http://localhost:${port}`);
 });
